@@ -4,14 +4,69 @@ import os
 import random
 import openai
 from datetime import datetime
+from importlib import import_module
 import argparse
 import time
+import torch
+import vllm
+from transformers import AutoTokenizer
     
+def dynamic_import_function(function_path):
+    '''
+    Dynamically import a function from a path string (e.g., "module.submodule.my_function")
+    templates.create_prompt_with_huggingface_tokenizer_template
+    '''
+    module_path, function_name = function_path.rsplit(".", 1)
+    module = import_module(module_path)
+    function = getattr(module, function_name)
+    return function
+
+def create_prompt_with_huggingface_tokenizer_template(messages, tokenizer, add_bos=False):
+    formatted_text = tokenizer.apply_chat_template(messages, add_generation_prompt=True, tokenize=False)
+    if add_bos:
+        formatted_text = tokenizer.bos_token + formatted_text
+    return formatted_text
+
+def use_vllm(prompts, model, sampling_params, chat_formatting_function, tokenizer):
+    
+    # chat_formatting_function = dynamic_import_function("templates.create_prompt_with_huggingface_tokenizer_template")
+    # model = vllm.LLM(
+    #     model=model_id,
+    #     tokenizer=model_id,
+    #     tokenizer_mode="auto",
+    #     tensor_parallel_size=torch.cuda.device_count(),
+    #     tokenizer_revision=None, 
+    #     revision=None,
+    # )
+    
+    # sampling_params = vllm.SamplingParams(
+    #     temperature=0.7,  # greedy decoding
+    #     max_tokens=5000,
+    #     # stop=args.additional_stop_sequence,
+    #     # --additional_stop_sequence',
+    #     # type=str,
+    #     # nargs="+",
+    #     # default=[],
+    # )
+    # apply chat formatting
+    formatted_prompts = []
+    for prompt in prompts:
+        # messages = [{"role": "user", "content": prompt}]
+        # formatted_prompt = chat_formatting_function(messages, tokenizer, add_bos=False)
+        formatted_prompts.append(prompt)
+    prompts = formatted_prompts
+            
+    outputs = model.generate(prompts, sampling_params)
+    outputs = [it.outputs[0].text for it in outputs]
+    return outputs[0]
 
 def make_requests(
         engine, prompts, max_tokens, temperature, top_p, 
-        frequency_penalty, presence_penalty, stop_sequences, logprobs, n, best_of, retries=3, api_key=None, organization=None
+        frequency_penalty, presence_penalty, stop_sequences, logprobs, n, best_of, retries=3, api_key=None, organization=None, model=None
     ):
+    # chat_formatting_function = dynamic_import_function("templates.create_prompt_with_huggingface_tokenizer_template")
+    
+    tokenizer = AutoTokenizer.from_pretrained('/data1/dyf/model/Llama-3-8B/')
     response = None
     target_length = max_tokens
     if api_key is not None:
@@ -20,21 +75,33 @@ def make_requests(
         openai.organization = organization
     retry_cnt = 0
     backoff_time = 30
+    sampling_params = vllm.SamplingParams(
+        max_tokens=target_length,
+        temperature=temperature,
+        top_p=top_p,
+        frequency_penalty=frequency_penalty,
+        presence_penalty=presence_penalty,
+        stop=stop_sequences,
+        logprobs=logprobs,
+        n=n,
+        best_of=best_of,
+    )
     while retry_cnt <= retries:
         try:
-            response = openai.Completion.create(
-                engine=engine,
-                prompt=prompts,
-                max_tokens=target_length,
-                temperature=temperature,
-                top_p=top_p,
-                frequency_penalty=frequency_penalty,
-                presence_penalty=presence_penalty,
-                stop=stop_sequences,
-                logprobs=logprobs,
-                n=n,
-                best_of=best_of,
-            )
+            response = use_vllm(prompts, model, sampling_params, None, tokenizer)
+            # response = openai.Completion.create(
+            #     engine=engine,
+            #     prompt=prompts,
+            #     max_tokens=target_length,
+            #     temperature=temperature,
+            #     top_p=top_p,
+            #     frequency_penalty=frequency_penalty,
+            #     presence_penalty=presence_penalty,
+            #     stop=stop_sequences,
+            #     logprobs=logprobs,
+            #     n=n,
+            #     best_of=best_of,
+            # )
             break
         except openai.error.OpenAIError as e:
             print(f"OpenAIError: {e}.")
@@ -47,7 +114,7 @@ def make_requests(
                 backoff_time *= 1.5
             retry_cnt += 1
     
-    if isinstance(prompts, list):
+    if isinstance(prompts[0], list):
         results = []
         for j, prompt in enumerate(prompts):
             data = {

@@ -11,8 +11,9 @@ from multiprocessing import Pool
 from functools import partial
 from rouge_score import rouge_scorer
 from gpt3_api import make_requests as make_gpt3_requests
-
-
+import vllm
+import torch
+# os.environ["CUDA_VISIBLE_DEVICES"] = "6,7"
 random.seed(42)
 
 
@@ -39,9 +40,9 @@ def find_word_in_string(w, s):
 
 
 def post_process_gpt3_response(response):
-    if response is None or response["choices"][0]["finish_reason"] == "length":
-        return []
-    raw_instructions = re.split(r"\n\d+\s?\. ", response["choices"][0]["text"])
+    # if response is None or response["choices"][0]["finish_reason"] == "length":
+    #     return []
+    raw_instructions = re.split(r"\n\d+\s?\. ", response)
     instructions = []
     for inst in raw_instructions:
         inst = re.sub(r"\s+", " ", inst).strip()
@@ -75,21 +76,21 @@ def parse_args():
     parser.add_argument(
         "--batch_dir",
         type=str,
-        required=True,
-        default="data/gpt3_generations/",
+        # required=True,
+        default="/home/dyf/data_generate/self-instruct/data/gpt3_generations/",
         help="The directory where the batch is stored.",
     )
     parser.add_argument(
         "--seed_tasks_path",
         type=str,
-        required=True,
-        default="data/seed_tasks.jsonl",
+        # required=True,
+        default="/home/dyf/data_generate/self-instruct/data/seed_tasks.jsonl",
         help="The path to the human written data.",
     )
     parser.add_argument(
         "--num_instructions_to_generate",
         type=int,
-        default=100,
+        default=60000,
         help="th",
     )
     parser.add_argument(
@@ -112,7 +113,7 @@ def parse_args():
     parser.add_argument(
         "--request_batch_size",
         type=int,
-        default=5,
+        default=1,
         help="The number of requests to send to GPT3 at a time."
     )
     parser.add_argument(
@@ -155,7 +156,14 @@ if __name__ == "__main__":
     progress_bar = tqdm.tqdm(total=args.num_instructions_to_generate)
     if machine_instructions:
         progress_bar.update(len(machine_instructions))
-
+    model = vllm.LLM(
+        model='/data1/dyf/model/Llama-3-8B/',
+        tokenizer='/data1/dyf/model/Llama-3-8B/',
+        tokenizer_mode="auto",
+        tensor_parallel_size=torch.cuda.device_count(),
+        tokenizer_revision=None, 
+        revision=None,
+    )
     with open(os.path.join(args.batch_dir, "machine_generated_instructions.jsonl"), "a") as fout:
         while len(machine_instructions) < args.num_instructions_to_generate:
             batch_inputs = []
@@ -184,6 +192,7 @@ if __name__ == "__main__":
                 best_of=1,
                 api_key=args.api_key,
                 organization=args.organization,
+                model=model
             )
             instructions = []
             all_metadata = []
